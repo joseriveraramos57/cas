@@ -68,22 +68,26 @@ function crearTablasAutomaticas() {
     console.log("Tablas verificadas/creadas automáticamente en la base de datos.");
 }
 
-// Registro de Usuario Real
+/// Registro de Usuario Real
 app.post('/api/register', async (req, res) => {
-    const { username, password } = req.body;
-    if (!username || !password) return res.status(400).json({ error: 'Faltan datos' });
-
     try {
+        const { username, password } = req.body;
+        if (!username || !password) {
+            return res.status(400).json({ error: 'Faltan datos' });
+        }
+
         const hash = await bcrypt.hash(password, 10);
         db.query('INSERT INTO users (username, password_hash, balance) VALUES (?, ?, 0.00)', [username, hash], (err, result) => {
-            if (err) return res.status(400).json({ error: 'El usuario ya existe o error en base de datos' });
+            if (err) {
+                return res.status(400).json({ error: 'El usuario ya existe o error en base de datos' });
+            }
             res.json({ message: 'Usuario creado con éxito', userId: result.insertId });
         });
     } catch (e) {
-        res.status(500).json({ error: 'Error interno' });
+        console.error("Error en registro:", e);
+        res.status(500).json({ error: 'Error interno del servidor' });
     }
 });
-
 // Inicio de Sesión Real
 app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
