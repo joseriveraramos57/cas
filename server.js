@@ -7,110 +7,125 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Conexión a la Base de Datos en la Nube
-const db = mysql.createConnection({
+// Conexión a la Base de Datos en la Nube (usando pool para mejor manejo de promesas y reintentos)
+const pool = mysql.createPool({
     host: process.env.MYSQLHOST || process.env.DB_HOST || 'localhost',
     user: process.env.MYSQLUSER || process.env.DB_USER || 'root',
     password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || '',
     database: process.env.MYSQLDATABASE || process.env.DB_NAME || 'railway',
     port: process.env.MYSQLPORT || process.env.DB_PORT || 3306,
-    ssl: { rejectUnauthorized: false }
+    ssl: { rejectUnauthorized: false },
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
 });
 
-db.connect(err => {
-    if (err) {
-        console.error("Error conectando a la Base de Datos:", err);
-    } else {
-        console.log("Conectado a la Base de Datos de Dinero Real.");
-        crearTablasAutomaticas();
+const db = pool.promise();
+
+// Función para inicializar las tablas de forma síncrona/ordenada al arrancar
+async function inicializarBaseDatos() {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(50) NOT NULL UNIQUE,
+                password_hash VARCHAR(255) NOT NULL,
+                balance DECIMAL(12, 2) DEFAULT 0.00,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS bets (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                amount DECIMAL(12, 2) NOT NULL,
+                payout DECIMAL(12, 2) NOT NULL,
+                result ENUM('win', 'lose') NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+        `);
+
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS transactions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                type ENUM('deposit', 'withdrawal') NOT NULL,
+                amount DECIMAL(12, 2) NOT NULL,
+                method VARCHAR(50) NOT NULL,
+                destination VARCHAR(255) NOT NULL,
+                status ENUM('pending', 'completed', 'rejected') DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+        `);
+        console.log("Tablas de la base de datos verificadas y listas.");
+    } catch (err) {
+        console.error("Error crítico creando tablas:", err);
     }
-});
-
-// Función para crear las tablas automáticamente si no existen
-function crearTablasAutomaticas() {
-    const sqlUsers = `
-        CREATE TABLE IF NOT EXISTS users (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            username VARCHAR(50) NOT NULL UNIQUE,
-            password_hash VARCHAR(255) NOT NULL,
-            balance DECIMAL(12, 2) DEFAULT 0.00,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    `;
-    const sqlBets = `
-        CREATE TABLE IF NOT EXISTS bets (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            user_id INT NOT NULL,
-            amount DECIMAL(12, 2) NOT NULL,
-            payout DECIMAL(12, 2) NOT NULL,
-            result ENUM('win', 'lose') NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-    `;
-    const sqlTransactions = `
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            user_id INT NOT NULL,
-            type ENUM('deposit', 'withdrawal') NOT NULL,
-            amount DECIMAL(12, 2) NOT NULL,
-            method VARCHAR(50) NOT NULL,
-            destination VARCHAR(255) NOT NULL,
-            status ENUM('pending', 'completed', 'rejected') DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-    `;
-
-    db.query(sqlUsers, err => { if (err) console.error("Error creando tabla users:", err); });
-    db.query(sqlBets, err => { if (err) console.error("Error creando tabla bets:", err); });
-    db.query(sqlTransactions, err => { if (err) console.error("Error creando tabla transactions:", err); });
-    console.log("Tablas verificadas/creadas automáticamente en la base de datos.");
 }
 
-/// Registro de Usuario Real
+// Registro de Usuario Real
 app.post('/api/register', async (req, res) => {
     try {
         const { username, password } = req.body;
         if (!username || !password) {
-            return res.status(400).json({ error: 'Faltan datos' });
+            return res.status(400).json({ error: 'Faltan datos en el formulario' });
         }
 
         const hash = await bcrypt.hash(password, 10);
-        db.query('INSERT INTO users (username, password_hash, balance) VALUES (?, ?, 0.00)', [username, hash], (err, result) => {
-            if (err) {
-                return res.status(400).json({ error: 'El usuario ya existe o error en base de datos' });
-            }
-            res.json({ message: 'Usuario creado con éxito', userId: result.insertId });
-        });
+        const [result] = await db.query(
+            'INSERT INTO users (username, password_hash, balance) VALUES (?, ?, 0.00)', 
+            [username, hash]
+        );
+        
+        res.json({ message: 'Usuario creado con éxito', userId: result.insertId });
     } catch (e) {
-        console.error("Error en registro:", e);
-        res.status(500).json({ error: 'Error interno del servidor' });
+        console.error("Error detallado en registro:", e.message);
+        if (e.code === 'ER_DUP_ENTRY') {
+            return res.status(400).json({ error: 'El nombre de usuario ya está en uso' });
+        }
+        res.status(400).json({ error: 'Error al registrar el usuario en la base de datos' });
     }
 });
+
 // Inicio de Sesión Real
-app.post('/api/login', (req, res) => {
-    const { username, password } = req.body;
-    db.query('SELECT * FROM users WHERE username = ?', [username], async (err, results) => {
-        if (err || results.length === 0) return res.status(400).json({ error: 'Usuario no encontrado' });
+app.post('/api/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        if (!username || !password) {
+            return res.status(400).json({ error: 'Completa todos los campos' });
+        }
+
+        const [results] = await db.query('SELECT * FROM users WHERE username = ?', [username]);
+        if (results.length === 0) {
+            return res.status(400).json({ error: 'Usuario no encontrado' });
+        }
 
         const user = results[0];
         const match = await bcrypt.compare(password, user.password_hash);
-        if (!match) return res.status(400).json({ error: 'Contraseña incorrecta' });
+        if (!match) {
+            return res.status(400).json({ error: 'Contraseña incorrecta' });
+        }
 
         res.json({ user: { id: user.id, username: user.username, balance: parseFloat(user.balance) } });
-    });
+    } catch (e) {
+        console.error("Error en login:", e);
+        res.status(400).json({ error: 'Error al procesar el inicio de sesión' });
+    }
 });
 
 // Procesar Apuesta con Dinero Real
-app.post('/api/play', (req, res) => {
-    const { userId, betAmount, game, choice } = req.body;
-    if (betAmount <= 0) return res.status(400).json({ error: 'Apuesta no válida' });
+app.post('/api/play', async (req, res) => {
+    try {
+        const { userId, betAmount, game, choice } = req.body;
+        if (!betAmount || betAmount <= 0) return res.status(400).json({ error: 'Apuesta no válida' });
 
-    db.query('SELECT balance FROM users WHERE id = ?', [userId], (err, results) => {
-        if (err || results.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
+        const [users] = await db.query('SELECT balance FROM users WHERE id = ?', [userId]);
+        if (users.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
 
-        const balance = parseFloat(results[0].balance);
+        const balance = parseFloat(users[0].balance);
         if (balance < betAmount) return res.status(400).json({ error: 'Fondos insuficientes en tu cuenta' });
 
         let win = false;
@@ -136,58 +151,73 @@ app.post('/api/play', (req, res) => {
 
         const newBalance = balance - betAmount + payout;
 
-        db.beginTransaction(err => {
-            if (err) return res.status(500).json({ error: 'Error de servidor' });
+        const connection = await db.getConnection();
+        try {
+            await connection.beginTransaction();
 
-            db.query('UPDATE users SET balance = ? WHERE id = ?', [newBalance, userId], err => {
-                if (err) return db.rollback(() => res.status(500).json({ error: 'Error actualizando saldo' }));
+            await connection.query('UPDATE users SET balance = ? WHERE id = ?', [newBalance, userId]);
+            await connection.query(
+                'INSERT INTO bets (user_id, amount, payout, result) VALUES (?, ?, ?, ?)', 
+                [userId, betAmount, payout, win ? 'win' : 'lose']
+            );
 
-                db.query('INSERT INTO bets (user_id, amount, payout, result) VALUES (?, ?, ?, ?)', 
-                    [userId, betAmount, payout, win ? 'win' : 'lose'], err => {
-                    if (err) return db.rollback(() => res.status(500).json({ error: 'Error registrando apuesta' }));
+            await connection.commit();
+            connection.release();
 
-                    db.commit(err => {
-                        if (err) return db.rollback(() => res.status(500).json({ error: 'Error al confirmar transacción' }));
-                        res.json({ win, payout, newBalance, outcome: outcomeMsg });
-                    });
-                });
-            });
-        });
-    });
+            res.json({ win, payout, newBalance, outcome: outcomeMsg });
+        } catch (txErr) {
+            await connection.rollback();
+            connection.release();
+            throw txErr;
+        }
+    } catch (e) {
+        console.error("Error en juego:", e);
+        res.status(500).json({ error: 'Error al procesar la apuesta' });
+    }
 });
 
 // Solicitar Retiro Real de Dinero
-app.post('/api/withdraw', (req, res) => {
-    const { userId, amount, method, account } = req.body;
-    if (amount <= 0) return res.status(400).json({ error: 'Monto inválido' });
+app.post('/api/withdraw', async (req, res) => {
+    try {
+        const { userId, amount, method, account } = req.body;
+        if (!amount || amount <= 0) return res.status(400).json({ error: 'Monto inválido' });
 
-    db.query('SELECT balance FROM users WHERE id = ?', [userId], (err, results) => {
-        if (err || results.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
+        const [users] = await db.query('SELECT balance FROM users WHERE id = ?', [userId]);
+        if (users.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
 
-        const balance = parseFloat(results[0].balance);
+        const balance = parseFloat(users[0].balance);
         if (balance < amount) return res.status(400).json({ error: 'Saldo insuficiente para retirar' });
 
         const newBalance = balance - amount;
 
-        db.beginTransaction(err => {
-            if (err) return res.status(500).json({ error: 'Error de servidor' });
+        const connection = await db.getConnection();
+        try {
+            await connection.beginTransaction();
 
-            db.query('UPDATE users SET balance = ? WHERE id = ?', [newBalance, userId], err => {
-                if (err) return db.rollback(() => res.status(500).json({ error: 'Error descontando saldo' }));
+            await connection.query('UPDATE users SET balance = ? WHERE id = ?', [newBalance, userId]);
+            await connection.query(
+                'INSERT INTO transactions (user_id, type, amount, method, destination, status) VALUES (?, "withdrawal", ?, ?, ?, "pending")', 
+                [userId, amount, method, account]
+            );
 
-                db.query('INSERT INTO transactions (user_id, type, amount, method, destination, status) VALUES (?, "withdrawal", ?, ?, ?, "pending")', 
-                    [userId, amount, method, account], err => {
-                    if (err) return db.rollback(() => res.status(500).json({ error: 'Error guardando retiro' }));
+            await connection.commit();
+            connection.release();
 
-                    db.commit(err => {
-                        if (err) return db.rollback(() => res.status(500).json({ error: 'Error al confirmar' }));
-                        res.json({ message: 'Solicitud de retiro creada con éxito', newBalance });
-                    });
-                });
-            });
-        });
-    });
+            res.json({ message: 'Solicitud de retiro creada con éxito', newBalance });
+        } catch (txErr) {
+            await connection.rollback();
+            connection.release();
+            throw txErr;
+        }
+    } catch (e) {
+        console.error("Error en retiro:", e);
+        res.status(500).json({ error: 'Error al procesar el retiro' });
+    }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor real activo en puerto ${PORT}`));
+
+// Arrancar servidor solo después de asegurar las tablas
+inicializarBaseDatos().then(() => {
+    app.listen(PORT, () => console.log(`Servidor real activo en puerto ${PORT}`));
+});
