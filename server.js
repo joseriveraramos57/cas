@@ -7,20 +7,66 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Conexión segura a la Base de Datos en la Nube (Railway / Aiven / Render)
+// Conexión a la Base de Datos en la Nube
 const db = mysql.createConnection({
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'real_casino',
-    port: process.env.DB_PORT || 3306,
+    host: process.env.MYSQLHOST || process.env.DB_HOST || 'localhost',
+    user: process.env.MYSQLUSER || process.env.DB_USER || 'root',
+    password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || '',
+    database: process.env.MYSQLDATABASE || process.env.DB_NAME || 'railway',
+    port: process.env.MYSQLPORT || process.env.DB_PORT || 3306,
     ssl: { rejectUnauthorized: false }
 });
 
 db.connect(err => {
-    if (err) console.error("Error conectando a la Base de Datos:", err);
-    else console.log("Conectado a la Base de Datos de Dinero Real.");
+    if (err) {
+        console.error("Error conectando a la Base de Datos:", err);
+    } else {
+        console.log("Conectado a la Base de Datos de Dinero Real.");
+        crearTablasAutomaticas();
+    }
 });
+
+// Función para crear las tablas automáticamente si no existen
+function crearTablasAutomaticas() {
+    const sqlUsers = `
+        CREATE TABLE IF NOT EXISTS users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(50) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            balance DECIMAL(12, 2) DEFAULT 0.00,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    `;
+    const sqlBets = `
+        CREATE TABLE IF NOT EXISTS bets (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            amount DECIMAL(12, 2) NOT NULL,
+            payout DECIMAL(12, 2) NOT NULL,
+            result ENUM('win', 'lose') NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+    `;
+    const sqlTransactions = `
+        CREATE TABLE IF NOT EXISTS transactions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            type ENUM('deposit', 'withdrawal') NOT NULL,
+            amount DECIMAL(12, 2) NOT NULL,
+            method VARCHAR(50) NOT NULL,
+            destination VARCHAR(255) NOT NULL,
+            status ENUM('pending', 'completed', 'rejected') DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+    `;
+
+    db.query(sqlUsers, err => { if (err) console.error("Error creando tabla users:", err); });
+    db.query(sqlBets, err => { if (err) console.error("Error creando tabla bets:", err); });
+    db.query(sqlTransactions, err => { if (err) console.error("Error creando tabla transactions:", err); });
+    console.log("Tablas verificadas/creadas automáticamente en la base de datos.");
+}
 
 // Registro de Usuario Real
 app.post('/api/register', async (req, res) => {
@@ -30,7 +76,7 @@ app.post('/api/register', async (req, res) => {
     try {
         const hash = await bcrypt.hash(password, 10);
         db.query('INSERT INTO users (username, password_hash, balance) VALUES (?, ?, 0.00)', [username, hash], (err, result) => {
-            if (err) return res.status(400).json({ error: 'El usuario ya existe' });
+            if (err) return res.status(400).json({ error: 'El usuario ya existe o error en base de datos' });
             res.json({ message: 'Usuario creado con éxito', userId: result.insertId });
         });
     } catch (e) {
@@ -52,7 +98,7 @@ app.post('/api/login', (req, res) => {
     });
 });
 
-// Procesar Apuesta con Dinero Real (Servidor controla el resultado)
+// Procesar Apuesta con Dinero Real
 app.post('/api/play', (req, res) => {
     const { userId, betAmount, game, choice } = req.body;
     if (betAmount <= 0) return res.status(400).json({ error: 'Apuesta no válida' });
@@ -67,7 +113,6 @@ app.post('/api/play', (req, res) => {
         let payout = 0;
         let outcomeMsg = '';
 
-        // Lógica del servidor según el juego
         if (game === 'coinflip') {
             const outcome = Math.random() < 0.5 ? 'cara' : 'cruz';
             win = (choice === outcome);
@@ -87,7 +132,6 @@ app.post('/api/play', (req, res) => {
 
         const newBalance = balance - betAmount + payout;
 
-        // Transacción segura en la base de datos
         db.beginTransaction(err => {
             if (err) return res.status(500).json({ error: 'Error de servidor' });
 
