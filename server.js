@@ -79,11 +79,11 @@ app.post('/api/register', async (req, res) => {
         
         res.json({ message: 'Usuario creado con éxito', userId: result.insertId });
     } catch (e) {
-        console.error("Error detallado en registro:", e.message);
+        console.error("ERROR COMPLETO EN REGISTRO:", e); // Imprime el objeto de error entero
         if (e.code === 'ER_DUP_ENTRY') {
             return res.status(400).json({ error: 'El nombre de usuario ya está en uso' });
         }
-        res.status(400).json({ error: 'Error al registrar: ' + e.message });
+        res.status(400).json({ error: 'Error al registrar: ' + (e.message || 'Desconocido') });
     }
 });
 
