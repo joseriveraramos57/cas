@@ -7,19 +7,19 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Conexión usando las variables nativas de Railway
-const pool = mysql.createPool({
-    host: process.env.MYSQLHOST || process.env.DB_HOST || 'localhost',
-    user: process.env.MYSQLUSER || process.env.DB_USER || 'root',
-    password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || '',
-    database: process.env.MYSQLDATABASE || process.env.DB_NAME || 'railway',
-    port: process.env.MYSQLPORT || process.env.DB_PORT || 3306,
-    ssl: { rejectUnauthorized: false },
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
-});
+// Conexión universal usando DATABASE_URL de Railway
+const connectionConfig = process.env.DATABASE_URL 
+    ? process.env.DATABASE_URL 
+    : {
+        host: process.env.MYSQLHOST || process.env.DB_HOST || 'localhost',
+        user: process.env.MYSQLUSER || process.env.DB_USER || 'root',
+        password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || '',
+        database: process.env.MYSQLDATABASE || process.env.DB_NAME || 'railway',
+        port: process.env.MYSQLPORT || process.env.DB_PORT || 3306,
+        ssl: { rejectUnauthorized: false }
+      };
 
+const pool = mysql.createPool(connectionConfig);
 const db = pool.promise();
 
 // Inicializar tablas automáticamente al arrancar
@@ -66,7 +66,7 @@ async function inicializarBaseDatos() {
     }
 }
 
-// Registro con diagnóstico avanzado
+// Registro
 app.post('/api/register', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -74,11 +74,9 @@ app.post('/api/register', async (req, res) => {
             return res.status(400).json({ error: 'Faltan datos en el formulario' });
         }
 
-        // Probemos si la conexión responde antes de insertar
         await db.query('SELECT 1');
 
         const hash = await bcrypt.hash(password, 10);
-        
         const [result] = await db.query(
             'INSERT INTO users (username, password_hash, balance) VALUES (?, ?, 0.00)', 
             [username, hash]
@@ -87,12 +85,14 @@ app.post('/api/register', async (req, res) => {
         res.json({ message: 'Usuario creado con éxito', userId: result.insertId });
     } catch (e) {
         console.error("ERROR REAL EN REGISTRO:", e);
-        const errorMsg = e.message || e.code || JSON.stringify(e);
-        return res.status(400).json({ error: 'Fallo real: ' + errorMsg });
+        if (e.code === 'ER_DUP_ENTRY') {
+            return res.status(400).json({ error: 'El nombre de usuario ya está en uso' });
+        }
+        return res.status(400).json({ error: 'Fallo real: ' + (e.message || e.code || 'Desconocido') });
     }
 });
 
-// Inicio de Sesión Real
+// Login
 app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -118,7 +118,7 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// Procesar Apuesta con Dinero Real
+// Procesar Apuesta
 app.post('/api/play', async (req, res) => {
     try {
         const { userId, betAmount, game, choice } = req.body;
@@ -176,7 +176,7 @@ app.post('/api/play', async (req, res) => {
     }
 });
 
-// Solicitar Retiro Real de Dinero
+// Retirar
 app.post('/api/withdraw', async (req, res) => {
     try {
         const { userId, amount, method, account } = req.body;
@@ -215,7 +215,6 @@ app.post('/api/withdraw', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
-// Arrancar servidor solo después de asegurar las tablas
 inicializarBaseDatos().then(() => {
-    app.listen(PORT, () => console.log(`Servidor real activo en puerto ${PORT}`));
+    app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
 });
