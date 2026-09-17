@@ -7,28 +7,31 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Extracción inteligente de la URL de Railway o variables sueltas
-let connectionConfig;
-
-if (process.env.DATABASE_URL) {
-    // Si Railway nos pasó la URL completa, la usamos directamente
-    connectionConfig = process.env.DATABASE_URL;
-} else {
-    // Si no, intentamos armarla con las variables manuales o lanzamos alerta
-    connectionConfig = {
+// Configuración de conexión limpia y robusta para Railway
+const getDbConfig = () => {
+    if (process.env.DATABASE_URL) {
+        console.log("Usando DATABASE_URL detectada para la conexión.");
+        return process.env.DATABASE_URL;
+    }
+    
+    console.log("Usando variables individuales de entorno.");
+    return {
         host: process.env.MYSQLHOST || process.env.DB_HOST,
         user: process.env.MYSQLUSER || process.env.DB_USER,
         password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD,
-        database: process.env.MYSQLDATABASE || process.env.DB_NAME,
+        database: process.env.MYSQLDATABASE || process.env.DB_NAME || 'railway',
         port: process.env.MYSQLPORT || process.env.DB_PORT || 3306,
-        ssl: { rejectUnauthorized: false }
+        ssl: { rejectUnauthorized: false },
+        waitForConnections: true,
+        connectionLimit: 10,
+        queueLimit: 0
     };
-}
+};
 
-const pool = mysql.createPool(connectionConfig);
+const pool = mysql.createPool(getDbConfig());
 const db = pool.promise();
 
-// Inicializar tablas automáticamente al arrancar
+// Inicializar tablas de forma segura
 async function inicializarBaseDatos() {
     try {
         await db.query(`
@@ -68,11 +71,11 @@ async function inicializarBaseDatos() {
         `);
         console.log("Tablas de la base de datos verificadas y listas.");
     } catch (err) {
-        console.error("Error crítico creando tablas:", err.message);
+        console.error("Error crítico al inicializar tablas:", err.message);
     }
 }
 
-// Registro
+// Ruta de Registro limpia
 app.post('/api/register', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -80,25 +83,24 @@ app.post('/api/register', async (req, res) => {
             return res.status(400).json({ error: 'Faltan datos en el formulario' });
         }
 
-        await db.query('SELECT 1');
-
         const hash = await bcrypt.hash(password, 10);
+        
         const [result] = await db.query(
             'INSERT INTO users (username, password_hash, balance) VALUES (?, ?, 0.00)', 
             [username, hash]
         );
         
-        res.json({ message: 'Usuario creado con éxito', userId: result.insertId });
+        return res.json({ message: 'Usuario creado con éxito', userId: result.insertId });
     } catch (e) {
-        console.error("ERROR REAL EN REGISTRO:", e);
+        console.error("ERROR EN REGISTRO:", e);
         if (e.code === 'ER_DUP_ENTRY') {
             return res.status(400).json({ error: 'El nombre de usuario ya está en uso' });
         }
-        return res.status(400).json({ error: 'Fallo real: ' + (e.message || e.code || 'Desconocido') });
+        return res.status(400).json({ error: 'Error del servidor: ' + (e.message || e.code || 'Desconocido') });
     }
 });
 
-// Login
+// Ruta de Inicio de Sesión
 app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -117,14 +119,14 @@ app.post('/api/login', async (req, res) => {
             return res.status(400).json({ error: 'Contraseña incorrecta' });
         }
 
-        res.json({ user: { id: user.id, username: user.username, balance: parseFloat(user.balance) } });
+        return res.json({ user: { id: user.id, username: user.username, balance: parseFloat(user.balance) } });
     } catch (e) {
-        console.error("Error en login:", e.message);
-        res.status(400).json({ error: 'Error al iniciar sesión: ' + e.message });
+        console.error("ERROR EN LOGIN:", e);
+        return res.status(400).json({ error: 'Error al iniciar sesión: ' + (e.message || e.code || 'Desconocido') });
     }
 });
 
-// Procesar Apuesta
+// Ruta de Apuestas
 app.post('/api/play', async (req, res) => {
     try {
         const { userId, betAmount, game, choice } = req.body;
@@ -170,19 +172,19 @@ app.post('/api/play', async (req, res) => {
             await connection.commit();
             connection.release();
 
-            res.json({ win, payout, newBalance, outcome: outcomeMsg });
+            return res.json({ win, payout, newBalance, outcome: outcomeMsg });
         } catch (txErr) {
             await connection.rollback();
             connection.release();
             throw txErr;
         }
     } catch (e) {
-        console.error("Error en juego:", e.message);
-        res.status(500).json({ error: 'Error al procesar la apuesta' });
+        console.error("ERROR EN JUEGO:", e);
+        return res.status(500).json({ error: 'Error al procesar la apuesta' });
     }
 });
 
-// Retirar
+// Ruta de Retiros
 app.post('/api/withdraw', async (req, res) => {
     try {
         const { userId, amount, method, account } = req.body;
@@ -207,20 +209,20 @@ app.post('/api/withdraw', async (req, res) => {
             await connection.commit();
             connection.release();
 
-            res.json({ message: 'Solicitud de retiro creada con éxito', newBalance });
+            return res.json({ message: 'Solicitud de retiro creada con éxito', newBalance });
         } catch (txErr) {
             await connection.rollback();
             connection.release();
             throw txErr;
         }
     } catch (e) {
-        console.error("Error en retiro:", e.message);
-        res.status(500).json({ error: 'Error al procesar el retiro' });
+        console.error("ERROR EN RETIRO:", e);
+        return res.status(500).json({ error: 'Error al procesar el retiro' });
     }
 });
 
 const PORT = process.env.PORT || 3000;
 
 inicializarBaseDatos().then(() => {
-    app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
+    app.listen(PORT, () => console.log(`Servidor limpio y activo en puerto ${PORT}`));
 });
