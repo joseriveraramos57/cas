@@ -1,7 +1,7 @@
 {
   "name": "casino-backend",
   "version": "1.0.0",
-  "description": "Backend Casino",
+  "description": "Backend Casino Online",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
