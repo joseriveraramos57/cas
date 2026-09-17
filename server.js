@@ -7,22 +7,19 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Conexión a la Base de Datos en la Nube (usando pool para mejor manejo de promesas y reintentos)
-const pool = mysql.createPool({
-    host: process.env.MYSQLHOST || process.env.DB_HOST || 'localhost',
-    user: process.env.MYSQLUSER || process.env.DB_USER || 'root',
-    password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || '',
-    database: process.env.MYSQLDATABASE || process.env.DB_NAME || 'railway',
-    port: process.env.MYSQLPORT || process.env.DB_PORT || 3306,
-    ssl: { rejectUnauthorized: false },
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
+// Conexión directa y segura usando la URL completa de Railway
+const pool = mysql.createPool(process.env.DATABASE_URL || {
+    host: process.env.MYSQLHOST || 'localhost',
+    user: process.env.MYSQLUSER || 'root',
+    password: process.env.MYSQLPASSWORD || '',
+    database: process.env.MYSQLDATABASE || 'railway',
+    port: process.env.MYSQLPORT || 3306,
+    ssl: { rejectUnauthorized: false }
 });
 
 const db = pool.promise();
 
-// Función para inicializar las tablas de forma síncrona/ordenada al arrancar
+// Inicializar tablas automáticamente al arrancar
 async function inicializarBaseDatos() {
     try {
         await db.query(`
@@ -62,11 +59,11 @@ async function inicializarBaseDatos() {
         `);
         console.log("Tablas de la base de datos verificadas y listas.");
     } catch (err) {
-        console.error("Error crítico creando tablas:", err);
+        console.error("Error crítico creando tablas:", err.message);
     }
 }
 
-// Registro de Usuario Real
+// Registro
 app.post('/api/register', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -86,11 +83,11 @@ app.post('/api/register', async (req, res) => {
         if (e.code === 'ER_DUP_ENTRY') {
             return res.status(400).json({ error: 'El nombre de usuario ya está en uso' });
         }
-        res.status(400).json({ error: 'Error al registrar el usuario en la base de datos' });
+        res.status(400).json({ error: 'Error al registrar: ' + e.message });
     }
 });
 
-// Inicio de Sesión Real
+// Login
 app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -111,12 +108,12 @@ app.post('/api/login', async (req, res) => {
 
         res.json({ user: { id: user.id, username: user.username, balance: parseFloat(user.balance) } });
     } catch (e) {
-        console.error("Error en login:", e);
-        res.status(400).json({ error: 'Error al procesar el inicio de sesión' });
+        console.error("Error en login:", e.message);
+        res.status(400).json({ error: 'Error al iniciar sesión: ' + e.message });
     }
 });
 
-// Procesar Apuesta con Dinero Real
+// Procesar Apuesta
 app.post('/api/play', async (req, res) => {
     try {
         const { userId, betAmount, game, choice } = req.body;
@@ -126,7 +123,7 @@ app.post('/api/play', async (req, res) => {
         if (users.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
 
         const balance = parseFloat(users[0].balance);
-        if (balance < betAmount) return res.status(400).json({ error: 'Fondos insuficientes en tu cuenta' });
+        if (balance < betAmount) return res.status(400).json({ error: 'Fondos insuficientes' });
 
         let win = false;
         let payout = 0;
@@ -150,17 +147,15 @@ app.post('/api/play', async (req, res) => {
         }
 
         const newBalance = balance - betAmount + payout;
-
         const connection = await db.getConnection();
+
         try {
             await connection.beginTransaction();
-
             await connection.query('UPDATE users SET balance = ? WHERE id = ?', [newBalance, userId]);
             await connection.query(
                 'INSERT INTO bets (user_id, amount, payout, result) VALUES (?, ?, ?, ?)', 
                 [userId, betAmount, payout, win ? 'win' : 'lose']
             );
-
             await connection.commit();
             connection.release();
 
@@ -171,12 +166,12 @@ app.post('/api/play', async (req, res) => {
             throw txErr;
         }
     } catch (e) {
-        console.error("Error en juego:", e);
+        console.error("Error en juego:", e.message);
         res.status(500).json({ error: 'Error al procesar la apuesta' });
     }
 });
 
-// Solicitar Retiro Real de Dinero
+// Retirar
 app.post('/api/withdraw', async (req, res) => {
     try {
         const { userId, amount, method, account } = req.body;
@@ -186,38 +181,34 @@ app.post('/api/withdraw', async (req, res) => {
         if (users.length === 0) return res.status(404).json({ error: 'Usuario no encontrado' });
 
         const balance = parseFloat(users[0].balance);
-        if (balance < amount) return res.status(400).json({ error: 'Saldo insuficiente para retirar' });
+        if (balance < amount) return res.status(400).json({ error: 'Saldo insuficiente' });
 
         const newBalance = balance - amount;
-
         const connection = await db.getConnection();
+
         try {
             await connection.beginTransaction();
-
             await connection.query('UPDATE users SET balance = ? WHERE id = ?', [newBalance, userId]);
             await connection.query(
                 'INSERT INTO transactions (user_id, type, amount, method, destination, status) VALUES (?, "withdrawal", ?, ?, ?, "pending")', 
                 [userId, amount, method, account]
             );
-
             await connection.commit();
             connection.release();
 
-            res.json({ message: 'Solicitud de retiro creada con éxito', newBalance });
+            res.json({ message: 'Solicitud de retiro creada', newBalance });
         } catch (txErr) {
             await connection.rollback();
             connection.release();
             throw txErr;
         }
     } catch (e) {
-        console.error("Error en retiro:", e);
+        console.error("Error en retiro:", e.message);
         res.status(500).json({ error: 'Error al procesar el retiro' });
     }
 });
 
 const PORT = process.env.PORT || 3000;
-
-// Arrancar servidor solo después de asegurar las tablas
 inicializarBaseDatos().then(() => {
-    app.listen(PORT, () => console.log(`Servidor real activo en puerto ${PORT}`));
+    app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
 });
