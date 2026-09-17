@@ -7,15 +7,24 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Conexión súper flexible para variables manuales
-const pool = mysql.createPool({
-    host: process.env.MYSQLHOST || process.env.DB_HOST || process.env.HOST || 'localhost',
-    user: process.env.MYSQLUSER || process.env.DB_USER || process.env.USER || 'root',
-    password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || process.env.PASSWORD || '',
-    database: process.env.MYSQLDATABASE || process.env.DB_NAME || process.env.DATABASE || 'railway',
-    port: process.env.MYSQLPORT || process.env.DB_PORT || process.env.PORT_DB || 3306,
-    ssl: { rejectUnauthorized: false }
-});
+// Extracción inteligente de la URL de Railway o variables sueltas
+let connectionConfig;
+
+if (process.env.DATABASE_URL) {
+    // Si Railway nos pasó la URL completa, la usamos directamente
+    connectionConfig = process.env.DATABASE_URL;
+} else {
+    // Si no, intentamos armarla con las variables manuales o lanzamos alerta
+    connectionConfig = {
+        host: process.env.MYSQLHOST || process.env.DB_HOST,
+        user: process.env.MYSQLUSER || process.env.DB_USER,
+        password: process.env.MYSQLPASSWORD || process.env.DB_PASSWORD,
+        database: process.env.MYSQLDATABASE || process.env.DB_NAME,
+        port: process.env.MYSQLPORT || process.env.DB_PORT || 3306,
+        ssl: { rejectUnauthorized: false }
+    };
+}
+
 const pool = mysql.createPool(connectionConfig);
 const db = pool.promise();
 
