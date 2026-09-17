@@ -63,15 +63,16 @@ async function inicializarBaseDatos() {
     }
 }
 
-// Registro
+// Registro de diagnóstico seguro
 app.post('/api/register', async (req, res) => {
     try {
         const { username, password } = req.body;
         if (!username || !password) {
-            return res.status(400).json({ error: 'Faltan datos en el formulario' });
+            return res.status(400).json({ error: 'Faltan datos' });
         }
 
         const hash = await bcrypt.hash(password, 10);
+        
         const [result] = await db.query(
             'INSERT INTO users (username, password_hash, balance) VALUES (?, ?, 0.00)', 
             [username, hash]
@@ -79,14 +80,12 @@ app.post('/api/register', async (req, res) => {
         
         res.json({ message: 'Usuario creado con éxito', userId: result.insertId });
     } catch (e) {
-        console.error("ERROR COMPLETO EN REGISTRO:", e); // Imprime el objeto de error entero
-        if (e.code === 'ER_DUP_ENTRY') {
-            return res.status(400).json({ error: 'El nombre de usuario ya está en uso' });
-        }
-        res.status(400).json({ error: 'Error al registrar: ' + (e.message || 'Desconocido') });
+        // Convertimos el error completo a texto JSON para verlo sin que falle
+        const errorString = JSON.stringify(e, Object.getOwnPropertyNames(e));
+        console.error("ERROR JSON:", errorString);
+        return res.status(400).json({ error: errorString });
     }
 });
-
 // Login
 app.post('/api/login', async (req, res) => {
     try {
