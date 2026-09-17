@@ -31,10 +31,9 @@ const getDbConfig = () => {
 const pool = mysql.createPool(getDbConfig());
 const db = pool.promise();
 
-// Inicializar tablas de forma segura y tolerante a fallos
+// Inicializar tablas de forma limpia y sin duplicados
 async function inicializarBaseDatos() {
     try {
-        // Creamos la tabla de usuarios primero
         await db.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -45,7 +44,6 @@ async function inicializarBaseDatos() {
             );
         `);
 
-        // Creamos la tabla de apuestas sin restricciones estrictas de FOREIGN KEY si da problemas
         await db.query(`
             CREATE TABLE IF NOT EXISTS bets (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -57,7 +55,6 @@ async function inicializarBaseDatos() {
             );
         `);
 
-        // Creamos la tabla de transacciones
         await db.query(`
             CREATE TABLE IF NOT EXISTS transactions (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -72,69 +69,6 @@ async function inicializarBaseDatos() {
         `);
         
         console.log("¡Tablas de la base de datos verificadas y listas con éxito!");
-    } catch (err) {
-        console.error("Aviso en la base de datos (continuando de todos modos):", err.message);
-    }
-}
-
-        // Creamos la tabla de apuestas sin restricciones estrictas de FOREIGN KEY si da problemas
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS bets (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
-                amount DECIMAL(12, 2) NOT NULL,
-                payout DECIMAL(12, 2) NOT NULL,
-                result VARCHAR(10) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-
-        // Creamos la tabla de transacciones
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS transactions (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
-                type VARCHAR(20) NOT NULL,
-                amount DECIMAL(12, 2) NOT NULL,
-                method VARCHAR(50) NOT NULL,
-                destination VARCHAR(255) NOT NULL,
-                status VARCHAR(20) DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-        
-        console.log("¡Tablas de la base de datos verificadas y listas con éxito!");
-    } catch (err) {
-        console.error("Aviso en la base de datos (continuando de todos modos):", err.message);
-    }
-}        `);
-
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS bets (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
-                amount DECIMAL(12, 2) NOT NULL,
-                payout DECIMAL(12, 2) NOT NULL,
-                result ENUM('win', 'lose') NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            );
-        `);
-
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS transactions (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
-                type ENUM('deposit', 'withdrawal') NOT NULL,
-                amount DECIMAL(12, 2) NOT NULL,
-                method VARCHAR(50) NOT NULL,
-                destination VARCHAR(255) NOT NULL,
-                status ENUM('pending', 'completed', 'rejected') DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            );
-        `);
-        console.log("Tablas de la base de datos verificadas y listas.");
     } catch (err) {
         console.error("Error crítico al inicializar tablas:", err.message);
     }
